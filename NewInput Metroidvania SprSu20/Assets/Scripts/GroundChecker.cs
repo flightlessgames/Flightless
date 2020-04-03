@@ -5,17 +5,11 @@ using UnityEngine;
 [RequireComponent(typeof(BoxCollider))]
 public class GroundChecker : MonoBehaviour
 {
-    public bool _isGrounded { get; private set; } = false;
+    public bool _isGrounded = false;
 
     private void OnTriggerEnter(Collider other)
     {
         if (other.gameObject.CompareTag("Ground"))
             _isGrounded = true;
-    }
-
-    private void OnTriggerExit(Collider other)
-    {
-        if(other.gameObject.CompareTag("Ground"))
-            _isGrounded = false;
     }
 }
