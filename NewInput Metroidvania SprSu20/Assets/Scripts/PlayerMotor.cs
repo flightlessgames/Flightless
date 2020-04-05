@@ -14,6 +14,7 @@ public class PlayerMotor : MonoBehaviour
     [SerializeField] private float _jumpForce = 10f;
     [SerializeField] private float _dragForce = 1f;
     [SerializeField] private float _gravityForce = 10f;
+    [SerializeField] private float _velocityLimit = 50f;
 
     [Header("Required")]
     [SerializeField] private GroundChecker _groundChecker = null;
@@ -23,6 +24,7 @@ public class PlayerMotor : MonoBehaviour
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
+        Physics.gravity = new Vector3(Physics.gravity.x, Physics.gravity.y * 2, Physics.gravity.z);
 
         input = new PlayerInputActions();
         input.PlayerControls.Movement.performed += ctx => movementInput = ctx.ReadValue<Vector2>();
@@ -95,15 +97,25 @@ public class PlayerMotor : MonoBehaviour
         */
         #endregion
 
-        transform.position += new Vector3(movementInput.x, movementInput.y, 0) * Time.deltaTime * _moveSpeed;
+        transform.position += new Vector3(movementInput.x, 0, 0) * Time.deltaTime * _moveSpeed;
+
+        if(movementInput.y < 0)
+        {
+            Debug.Log("downforce");
+            rb.velocity += Vector3.down * _moveSpeed;
+        }
+
+        
+        if(rb.velocity.magnitude > _velocityLimit)
+        {
+            rb.velocity = rb.velocity.normalized * _velocityLimit;
+        }
     }
 
 
 
     private void Jump()
     {
-        Debug.Log("JUMP");
-
         if (!CheckGrounded())
             return;
 
