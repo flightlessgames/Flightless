@@ -1,9 +1,16 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
+[RequireComponent(typeof(Rigidbody))]
 public class PlayerMotor : MonoBehaviour
 {
+    public event Action Fell = delegate { };
+    public event Action<Vector3> Walked = delegate { };
+    public event Action Jumped = delegate { };
+    public event Action Climbed = delegate { };
+
     private Rigidbody rb = null;
 
     private PlayerInputActions input = null;
@@ -12,18 +19,31 @@ public class PlayerMotor : MonoBehaviour
     [Header("Settings")]
     [SerializeField] private float _moveSpeed = 10f;
     [SerializeField] private float _jumpForce = 10f;
-    [SerializeField] private float _dragForce = 1f;
-    [SerializeField] private float _gravityForce = 10f;
+    [SerializeField] private float _climbSpeed = 5f;
     [SerializeField] private float _velocityLimit = 50f;
 
     [Header("Required")]
-    [SerializeField] private GroundChecker _groundChecker = null;
 
-    private Vector3 moveVector = Vector3.zero;
+    [SerializeField] private GroundChecker _groundChecker = null;
+    [SerializeField] private GroundChecker _leftWallCheck = null;
+    [SerializeField] private GroundChecker _rightWallCheck = null;
+
+    private bool _canWalljump = false;
+    private Coroutine _climbWallsRoutine = null;
+
+
+    private enum WallCheckDirection
+    {
+        Left = 0,
+        Right = 1,
+        Up = 2
+    }
+    private WallCheckDirection prevJump = WallCheckDirection.Up;
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
+
         Physics.gravity = new Vector3(Physics.gravity.x, Physics.gravity.y * 2, Physics.gravity.z);
 
         input = new PlayerInputActions();
@@ -42,95 +62,183 @@ public class PlayerMotor : MonoBehaviour
     }
 
     private void FixedUpdate()
-    {
-        CreateMoveVector();
-        CalculateDragForce();
-        CalculateGravity();
-
+    { 
         Move();
+        Fall();
+        Climb();
     }
-
-    #region Movement Calculations, Custom RB
-    private void CreateMoveVector()
-    {
-        float horizontal = movementInput.x;
-
-        moveVector += new Vector3(horizontal, 0, 0);
-    }
-
-    private void CalculateDragForce()
-    {
-        //0 - our current direction (normalized to 1), times our dragForce chips away at the direction the player is moving and creates inertia towards 0 
-        //(might jitter when near 0, less than dragForce)
-        Vector3 drag = Vector3.zero - moveVector.normalized * _dragForce;
-
-        moveVector += drag;
-    }
-
-    private void CalculateGravity()
-    {
-        Vector3 gravity = Vector3.down * _gravityForce;
-
-        moveVector += gravity;
-    }
-    #endregion
 
     private void Move()
     {
-        #region Testing Custom RB
-        /*
-        //check for collision with ground/terrain
-        RaycastHit hit;
-        Ray ray = new Ray(transform.position, moveVector);
+        //move horizontally
+        Vector3 newMovement = new Vector3(movementInput.x, 0, 0) * Time.deltaTime * _moveSpeed;
 
-        if(Physics.Raycast(ray, out hit))
+
+        rb.MovePosition(transform.position + newMovement);
+
+        //invoke movement if our movement is > 0
+        if (Mathf.Abs(rb.velocity.x) > 0)
         {
-            //if we hit gound/terrain, set the movement distance vector to a new magnitude, equal to the distance to that object... do not go PAST that object 
-            if (hit.transform.CompareTag("Ground"))
-                moveVector = moveVector.normalized * (hit.distance - 1f); //hit.distance - 1f means the closest we can get to an object is 1 unit
-
-            Debug.Log("position: " + transform.position + ", distance: " + hit.distance);
+            Walked.Invoke(newMovement);
+            return;
         }
+    }
 
-        //then move (if no hit then use normal vector, if hit then vector is adjusted)
-        transform.position += moveVector;
-        */
-        #endregion
-
-        transform.position += new Vector3(movementInput.x, 0, 0) * Time.deltaTime * _moveSpeed;
-
-        if(movementInput.y < 0)
+    private void Fall()
+    {
+        //fall on DOWN input
+        if (movementInput.y < 0)
         {
-            Debug.Log("downforce");
             rb.velocity += Vector3.down * _moveSpeed;
+            Fell.Invoke();
         }
 
-        
-        if(rb.velocity.magnitude > _velocityLimit)
+        //speed limit?
+        if (rb.velocity.magnitude > _velocityLimit)
         {
             rb.velocity = rb.velocity.normalized * _velocityLimit;
         }
     }
 
+    private void Climb()
+    {
+        //if we're not inputting greater than 0 (UP), return this function void
+        if (!(movementInput.y > 0))
+            return;
 
+        bool canClimb = false;
+        ClassInterfacer[] classesInterfaced = CheckWalls();
+        WallCheckDirection direction = WallCheckDirection.Up;
+
+        if (movementInput.x < 0)
+        {
+            if (classesInterfaced[0] is IClimbable)
+            {
+                canClimb = true;
+                direction = WallCheckDirection.Left;
+            }
+        }
+
+        if (movementInput.x > 0)
+        {
+            if (classesInterfaced[1] is IClimbable)
+            {
+                canClimb = true;
+                direction = WallCheckDirection.Right;
+            }
+        }
+
+        if (canClimb)
+        {
+            if (_climbWallsRoutine == null)
+            {
+                _climbWallsRoutine = StartCoroutine(PlayClimbAnimation(direction));
+                Climbed.Invoke();
+            }
+        }
+    }
 
     private void Jump()
     {
-        if (!CheckGrounded())
-            return;
+        bool canJump = false;
 
-        //moveVector += new Vector3(0, _jumpForce, 0);
-        rb.velocity = new Vector3(0, _jumpForce, 0);
-        _groundChecker._isGrounded = false;
+        //if on the ground, set jump direction to UP
+        if (CheckGrounded() is IJumpable)
+        {
+            prevJump = WallCheckDirection.Up;
+            canJump = true;
+        }
+
+        if (_canWalljump)
+        {
+            ClassInterfacer[] classesInterfaced = CheckWalls();
+            if (classesInterfaced[0] is IJumpable && prevJump != WallCheckDirection.Left)
+            {
+                prevJump = WallCheckDirection.Left;
+                canJump = true;
+            }
+            else if (classesInterfaced[1] is IJumpable && prevJump != WallCheckDirection.Right)
+            {
+                prevJump = WallCheckDirection.Right;
+                canJump = true;
+            }
+        }
+
+        if (canJump)
+        {
+            //set velocity to instantly jump up, do not "jump against air" and stall mid-air
+            rb.velocity = (Vector3.up * _jumpForce);
+        }
     }
 
-    private bool CheckGrounded()
+    private ClassInterfacer CheckGrounded()
     {
         if(_groundChecker != null)
         {
-            return _groundChecker._isGrounded;
+            return _groundChecker.CollisionCheck();
         }
 
-        return true;
+        return null;
+    }
+
+    private ClassInterfacer[] CheckWalls()
+    {
+        //if we've defined two collision checkers
+        if(_leftWallCheck != null && _rightWallCheck != null)
+        {
+            //if either returns true, then this returns true
+            var leftCheck = _leftWallCheck.CollisionCheck();
+            var rightCheck = _rightWallCheck.CollisionCheck();
+
+            //enum direction Left = 0, right = 1. In the array Left is stored as 0, right as 1
+            List<ClassInterfacer> classesInterfaced = new List<ClassInterfacer>() { leftCheck, rightCheck };
+            return classesInterfaced.ToArray();
+        }
+        return null;
+    }
+
+    private IEnumerator PlayClimbAnimation(WallCheckDirection direction)
+    {
+        Vector2 savedMovement = movementInput;
+
+        input.Disable();
+        rb.useGravity = false;
+        rb.velocity = Vector3.zero;
+        movementInput = Vector2.zero;
+
+
+        bool isActiveClimbing = true;
+        Vector3 climbMovement = Vector3.up * Time.deltaTime * _climbSpeed;
+        ClassInterfacer[] walls;
+
+        //needs to be scalable for height of wall
+        while (isActiveClimbing)
+        {
+            transform.position += climbMovement;
+
+            //adjust for animation time
+            yield return new WaitForEndOfFrame();
+
+            //check walls each whileloop
+            walls = CheckWalls();
+
+            //care about if we are climbing left or right
+            //enum direction Left = 0, right = 1. In the array Left is stored as 0, right as 1
+            if (walls[(int)direction] == null)
+            {
+                isActiveClimbing = false;
+            }
+        }
+
+        movementInput = savedMovement;
+
+        input.Enable();
+        rb.useGravity = true;
+        _climbWallsRoutine = null;
+    }
+
+    public void EnableWallJump()
+    {
+        _canWalljump = true;
     }
 }
